@@ -206,10 +206,65 @@ pub trait RefResolver {
     fn resolve(&self, input: &LockedInput) -> Result<String, BlockReason>;
 }
 
+/// Rewrite an `https://github.com/...` URL to carry a token as Basic-auth
+/// credentials (`https://x-access-token:<token>@github.com/...`) — GitHub's git
+/// endpoint accepts a classic or fine-grained token as the password for **both**
+/// public and private repos, so `git ls-remote` authenticates without a credential
+/// helper or keychain (a launchd/systemd daemon has neither). `None` for a non-https
+/// URL. Typed concatenation, no `format!()`.
+fn authed_url(url: &str, token: &str) -> Option<String> {
+    url.strip_prefix("https://").map(|rest| {
+        let mut authed = String::from("https://x-access-token:");
+        authed.push_str(token);
+        authed.push('@');
+        authed.push_str(rest);
+        authed
+    })
+}
+
 /// The production [`RefResolver`]: `git ls-remote <url> <ref>`, argv-typed, no
-/// shell. Parses the leading SHA from the first output line.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GitLsRemoteResolver;
+/// shell. When constructed [`GitLsRemoteResolver::with_token`], it injects a bearer
+/// header for github so **private** repos resolve in a credential-less daemon
+/// context (the fix for the private-input blocks a keychain-less launchd agent hit).
+/// Parses the leading SHA from the first output line.
+#[derive(Clone, Debug, Default)]
+pub struct GitLsRemoteResolver {
+    token: Option<String>,
+}
+
+impl GitLsRemoteResolver {
+    /// A resolver for public repos only (no auth).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A resolver that falls back to authenticating github with `token` for repos
+    /// that don't resolve anonymously (private). A `None`/empty token is equivalent
+    /// to [`GitLsRemoteResolver::new`].
+    #[must_use]
+    pub fn with_token(token: Option<String>) -> Self {
+        Self {
+            token: token.filter(|t| !t.is_empty()),
+        }
+    }
+
+    /// One `git ls-remote <url> <ref>` attempt. `None` on any failure so the caller
+    /// can try the next auth mode.
+    fn try_ls_remote(url: &str, git_ref: &str) -> Option<String> {
+        let output = Command::new("git")
+            .args(["ls-remote", url, git_ref])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()
+            .map(str::to_owned)
+    }
+}
 
 impl RefResolver for GitLsRemoteResolver {
     fn resolve(&self, input: &LockedInput) -> Result<String, BlockReason> {
@@ -218,19 +273,16 @@ impl RefResolver for GitLsRemoteResolver {
             .as_deref()
             .ok_or_else(|| FlakeError::Unresolvable(String::new()).block())?;
         let git_ref = input.git_ref.as_deref().unwrap_or("HEAD");
-        let output = Command::new("git")
-            .args(["ls-remote", url, git_ref])
-            .output()
-            .map_err(|_| BlockReason::Unreachable)?;
-        if !output.status.success() {
-            return Err(BlockReason::Unreachable);
+        // Token-authenticated first (Basic auth works for both public and private);
+        // fall back to anonymous when there's no token or the token can't reach it.
+        if let Some(token) = &self.token {
+            if let Some(authed) = authed_url(url, token) {
+                if let Some(sha) = Self::try_ls_remote(&authed, git_ref) {
+                    return Ok(sha);
+                }
+            }
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
-            .split_whitespace()
-            .next()
-            .map(str::to_owned)
-            .ok_or(BlockReason::Unreachable)
+        Self::try_ls_remote(url, git_ref).ok_or(BlockReason::Unreachable)
     }
 }
 
@@ -375,6 +427,23 @@ mod tests {
     fn bad_json_and_malformed_lock_are_typed_errors() {
         assert_eq!(FlakeLock::parse("not json"), Err(FlakeError::BadJson));
         assert_eq!(FlakeLock::parse("{}"), Err(FlakeError::MalformedLock));
+    }
+
+    #[test]
+    fn authed_url_embeds_the_token_as_basic_auth() {
+        assert_eq!(
+            authed_url("https://github.com/pleme-io/blackmatter", "ghp_abc").as_deref(),
+            Some("https://x-access-token:ghp_abc@github.com/pleme-io/blackmatter")
+        );
+        // non-https (e.g. git@) has no https prefix → no rewrite
+        assert_eq!(authed_url("git://x/y", "t"), None);
+    }
+
+    #[test]
+    fn with_token_keeps_a_real_token_and_drops_an_empty_one() {
+        assert!(GitLsRemoteResolver::with_token(Some("t".into())).token.is_some());
+        assert!(GitLsRemoteResolver::with_token(Some(String::new())).token.is_none());
+        assert!(GitLsRemoteResolver::new().token.is_none());
     }
 
     #[test]
