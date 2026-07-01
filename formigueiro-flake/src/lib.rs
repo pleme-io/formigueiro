@@ -23,7 +23,7 @@
 use std::fmt;
 use std::process::Command;
 
-use formigueiro_core::{BlockReason, UpdateEnv, UpdateSignal};
+use formigueiro_core::{BlockReason, SignalSource, UpdateEnv, UpdateSignal};
 use serde::{Deserialize, Serialize};
 
 /// A typed error from parsing or resolving a flake. Its [`fmt::Display`] impl is
@@ -258,11 +258,37 @@ impl<R: RefResolver> UpdateEnv for FlakeEnv<'_, R> {
     }
 }
 
+/// A [`SignalSource`] over a parsed [`FlakeLock`]: emits a `flake-input` signal for
+/// every tracked input — "consider every flake input this cycle." Pairs with
+/// [`FlakeEnv`] as the ingestion half (source = what; env = current/latest).
+pub struct FlakeSignalSource<'a> {
+    lock: &'a FlakeLock,
+}
+
+impl<'a> FlakeSignalSource<'a> {
+    /// A signal source over `lock`'s inputs.
+    #[must_use]
+    pub fn new(lock: &'a FlakeLock) -> Self {
+        Self { lock }
+    }
+}
+
+impl SignalSource for FlakeSignalSource<'_> {
+    fn signals(&self) -> Vec<UpdateSignal> {
+        self.lock
+            .input_names()
+            .into_iter()
+            .map(|name| UpdateSignal::new("flake-input", name))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use formigueiro_core::{
-        Colony, FlakeInputKind, MemPlanStore, ShadowOutcome, Swarm, TickOutcome, UpdateKind,
+        Colony, FlakeInputKind, MemPlanStore, ShadowOutcome, SignalSource, Swarm, TickOutcome,
+        UpdateKind,
     };
     use outorga::{PromotionMode, PromotionPolicy};
 
@@ -343,6 +369,30 @@ mod tests {
         // already-current → UpToDate.
         let same = FlakeEnv::new(&lock, &MockResolver { head: "aaa111" });
         assert_eq!(FlakeInputKind.shadow(&sig, &same), ShadowOutcome::UpToDate);
+    }
+
+    #[test]
+    fn flake_signal_source_drives_a_full_ingestion_cycle() {
+        let lock = FlakeLock::parse(LOCK).unwrap();
+        let source = FlakeSignalSource::new(&lock);
+        let sigs = source.signals();
+        assert_eq!(sigs.len(), 2, "one signal per flake input");
+        assert!(sigs.iter().all(|s| s.kind == "flake-input"));
+        // drive a frozen swarm straight from the source (ingestion → cycle).
+        let env = FlakeEnv::new(&lock, &MockResolver { head: "ccc333" });
+        let mut swarm = Swarm::new(
+            Colony::new()
+                .register(
+                    Box::new(FlakeInputKind),
+                    PromotionPolicy::new(PromotionMode::Effect),
+                )
+                .frozen(true),
+            MemPlanStore::new(),
+        );
+        let report = swarm.run_cycle_from(&source, &env, 1);
+        assert_eq!(report.total(), 2);
+        assert_eq!(report.shadowed, 2, "both inputs bump; frozen → shadowed");
+        assert_eq!(report.applied, 0);
     }
 
     #[test]

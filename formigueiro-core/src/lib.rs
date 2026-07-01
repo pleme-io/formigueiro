@@ -109,6 +109,18 @@ pub trait UpdateKind {
     fn shadow(&self, sig: &UpdateSignal, env: &dyn UpdateEnv) -> ShadowOutcome;
 }
 
+/// A source of [`UpdateSignal`]s — *where the swarm's work comes from*. Flake
+/// inputs, a NATS stream, a git webhook: each is a `SignalSource`. The daemon polls
+/// [`SignalSource::signals`] each cycle and feeds them to [`Swarm::run_cycle`].
+/// This is the ingestion seam (distinct from [`UpdateEnv`], the observation seam):
+/// a source says *what to consider*, the env says *what its current/latest are*.
+pub trait SignalSource {
+    /// The signals to consider this cycle. A source that has nothing (or transiently
+    /// can't enumerate) returns an empty vec — never an error the daemon must handle
+    /// mid-loop.
+    fn signals(&self) -> Vec<UpdateSignal>;
+}
+
 /// The default shadow most kinds reuse: compare `current` vs `latest`; a
 /// difference is a [`ShadowOutcome::WouldApply`], equality is
 /// [`ShadowOutcome::UpToDate`]. A brand-new subject (no current) is a WouldApply

@@ -19,7 +19,7 @@
 use outorga::{PromotionDecision, ShadowReason};
 use serde::{Deserialize, Serialize};
 
-use crate::{Colony, ColonyOutcome, PlanStore, TickOutcome, UpdateEnv, UpdateSignal};
+use crate::{Colony, ColonyOutcome, PlanStore, SignalSource, TickOutcome, UpdateEnv, UpdateSignal};
 
 /// The stateful swarm: a [`Colony`] (kinds + policies + freeze) plus its
 /// [`PlanStore`] (per-target window memory). Runs cycles; owns no I/O (the
@@ -71,6 +71,18 @@ impl<S: PlanStore> Swarm<S> {
             report.record(outcome);
         }
         report
+    }
+
+    /// Run one cycle over every signal a [`SignalSource`] yields — the daemon's
+    /// per-tick entry point (equivalent to `run_cycle(&source.signals(), env, now)`,
+    /// with the ingestion seam kept separate from the observation seam).
+    pub fn run_cycle_from<Src: SignalSource>(
+        &mut self,
+        source: &Src,
+        env: &dyn UpdateEnv,
+        now_epoch: i64,
+    ) -> SwarmReport {
+        self.run_cycle(&source.signals(), env, now_epoch)
     }
 
     /// The cumulative **pending plan**: every tracked target that has a pending
@@ -344,5 +356,19 @@ mod tests {
         let ready = s.pending_plan(10_600);
         assert_eq!((ready.ready_to_apply(), ready.held()), (1, 0));
         assert!(!ready.is_empty());
+    }
+
+    #[test]
+    fn run_cycle_from_polls_a_signal_source() {
+        struct VecSource(Vec<UpdateSignal>);
+        impl crate::SignalSource for VecSource {
+            fn signals(&self) -> Vec<UpdateSignal> {
+                self.0.clone()
+            }
+        }
+        let mut s = swarm();
+        let src = VecSource(vec![UpdateSignal::new("flake-input", "stale")]);
+        let r = s.run_cycle_from(&src, &Env, 1);
+        assert_eq!((r.total(), r.applied), (1, 1)); // Effect + a pending bump → applied
     }
 }
