@@ -26,8 +26,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod colony;
 pub mod plan_store;
+pub mod swarm;
 pub use colony::{Colony, ColonyOutcome};
 pub use plan_store::{fold, MemPlanStore, PlanStore, TargetState};
+pub use swarm::{Swarm, SwarmReport};
 
 /// An ingested update event: "input `subject` of kind `kind` may have moved to
 /// `revision`". `revision` is a hint (the event's claimed new value); the kind's
