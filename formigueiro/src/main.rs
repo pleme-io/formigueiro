@@ -4,7 +4,7 @@
 //!
 //! ```text
 //!   FormigueiroConfig (shikumi)  ──build_colony──▶  Colony (kinds + policies + freeze)
-//!   <flake>/flake.lock  ──FlakeLock::parse──▶  FlakeSignalSource + FlakeEnv(GitLsRemoteResolver)
+//!   <flake>/flake.lock  ──FlakeLock::parse──▶  FlakeSignalSource + FlakeEnv(GitHubApiResolver)
 //!            │
 //!            ▼
 //!   SwarmDaemon(Swarm, SystemClock, StdoutSink).tick(source, env)
@@ -33,7 +33,7 @@ use formigueiro_core::{
     NullExecutor, ReportSink, Swarm, SwarmDaemon, SwarmPlan, SwarmReport, SystemClock, KIND_CATALOG,
 };
 use formigueiro_flake::{
-    FlakeEnv, FlakeLock, FlakeSignalSource, GitLsRemoteResolver, NixFlakeExecutor,
+    FlakeEnv, FlakeLock, FlakeSignalSource, GitHubApiResolver, NixFlakeExecutor,
 };
 use shikumi::TieredConfig;
 
@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     // Auth github so PRIVATE fleet inputs resolve in a credential-less daemon
     // context (a launchd/systemd agent has no keychain). Token from GITHUB_TOKEN,
     // else the fleet-standard ~/.config/github/token; absent ⇒ public repos only.
-    let resolver = GitLsRemoteResolver::with_token(read_github_token());
+    let resolver = GitHubApiResolver::with_token(read_github_token());
     // Bound the mutation rate across cycles: burst = the configured burst, refilling
     // conservatively (M0: ~1/min; samba does the real quota-driven pacing in prod).
     let mut pacer = LeakyBucketPacer::new(f64::from(config.pacing.burst.max(1)), 1.0 / 60.0);

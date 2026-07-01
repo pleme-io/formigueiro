@@ -9,11 +9,12 @@
 //! - **latest** — the input's upstream head, resolved via a [`RefResolver`].
 //!
 //! [`RefResolver`] is the **[TYPED-SPEC triplet] Environment seam**: the real impl
-//! ([`GitLsRemoteResolver`]) runs `git ls-remote` with a **typed argv (no shell)**,
-//! while tests substitute a mock — so the swarm's flake behavior is exercised end
-//! to end without touching the network. This crate does not re-author the shadow
-//! algorithm; it satisfies [`UpdateEnv`], which is exactly the boundary the triplet
-//! says to abstract behind a trait.
+//! ([`GitHubApiResolver`]) resolves via the GitHub REST API (a `curl` GET, typed
+//! argv, no shell, no git subprocess — so git's credential helper / the macOS
+//! keychain popup is *structurally impossible*), while tests substitute a mock — so
+//! the swarm's flake behavior is exercised end to end without touching the network.
+//! This crate does not re-author the shadow algorithm; it satisfies [`UpdateEnv`],
+//! which is exactly the boundary the triplet says to abstract behind a trait.
 //!
 //! All errors are typed ([`FlakeError`]); nothing panics, unwraps a fallible parse,
 //! or emits a `format!()`-composed string (the `Display` impl is the render seam).
@@ -79,10 +80,14 @@ impl FlakeError {
 pub struct LockedInput {
     /// The currently-locked revision (the `locked.rev` in `flake.lock`).
     pub locked_rev: Option<String>,
-    /// The clone URL to resolve the upstream head against (built from `original`).
+    /// The clone URL (built from `original`) — retained for reference.
     pub url: Option<String>,
     /// The ref (branch/tag) to resolve; `None` means the remote's default head.
     pub git_ref: Option<String>,
+    /// The github owner (for the REST-API resolver).
+    pub owner: Option<String>,
+    /// The github repo (for the REST-API resolver).
+    pub repo: Option<String>,
 }
 
 /// A typed, minimal parse of `flake.lock` — the root's direct inputs, each mapped
@@ -130,13 +135,16 @@ impl FlakeLock {
                 .and_then(|l| l.get("rev"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned);
-            let (url, git_ref) = origin_of(node.get("original").or_else(|| node.get("locked")));
+            let (url, git_ref, owner, repo) =
+                origin_of(node.get("original").or_else(|| node.get("locked")));
             inputs.insert(
                 name.clone(),
                 LockedInput {
                     locked_rev,
                     url,
                     git_ref,
+                    owner,
+                    repo,
                 },
             );
         }
@@ -162,12 +170,13 @@ impl FlakeLock {
     }
 }
 
-/// Build a resolvable `(url, git_ref)` from a node's `original`/`locked` object.
-/// `github` inputs get an `https://github.com/<owner>/<repo>` URL built by typed
-/// concatenation (no `format!()` of the URL). `git` inputs use their `url`.
-fn origin_of(origin: Option<&serde_json::Value>) -> (Option<String>, Option<String>) {
+/// Extract `(url, git_ref, owner, repo)` from a node's `original`/`locked` object.
+/// `github` inputs yield owner + repo (for the REST-API resolver) plus a clone URL;
+/// `git` inputs yield their `url`. Typed concatenation, no `format!()`.
+type Origin = (Option<String>, Option<String>, Option<String>, Option<String>);
+fn origin_of(origin: Option<&serde_json::Value>) -> Origin {
     let Some(o) = origin else {
-        return (None, None);
+        return (None, None, None, None);
     };
     let git_ref = o.get("ref").and_then(serde_json::Value::as_str).map(str::to_owned);
     let kind = o.get("type").and_then(serde_json::Value::as_str).unwrap_or_default();
@@ -185,13 +194,15 @@ fn origin_of(origin: Option<&serde_json::Value>) -> (Option<String>, Option<Stri
                 }
                 _ => None,
             };
-            (url, git_ref)
+            (url, git_ref, owner.map(str::to_owned), repo.map(str::to_owned))
         }
         "git" => (
             o.get("url").and_then(serde_json::Value::as_str).map(str::to_owned),
             git_ref,
+            None,
+            None,
         ),
-        _ => (None, git_ref),
+        _ => (None, git_ref, None, None),
     }
 }
 
@@ -206,98 +217,78 @@ pub trait RefResolver {
     fn resolve(&self, input: &LockedInput) -> Result<String, BlockReason>;
 }
 
-/// Rewrite an `https://github.com/...` URL to carry a token as Basic-auth
-/// credentials (`https://x-access-token:<token>@github.com/...`) — GitHub's git
-/// endpoint accepts a classic or fine-grained token as the password for **both**
-/// public and private repos, so `git ls-remote` authenticates without a credential
-/// helper or keychain (a launchd/systemd daemon has neither). `None` for a non-https
-/// URL. Typed concatenation, no `format!()`.
-fn authed_url(url: &str, token: &str) -> Option<String> {
-    url.strip_prefix("https://").map(|rest| {
-        let mut authed = String::from("https://x-access-token:");
-        authed.push_str(token);
-        authed.push('@');
-        authed.push_str(rest);
-        authed
-    })
+/// Build the GitHub REST-API commits URL for a ref (typed concatenation, no
+/// `format!()`): `https://api.github.com/repos/<owner>/<repo>/commits/<ref>`.
+fn commits_api_url(owner: &str, repo: &str, git_ref: &str) -> String {
+    let mut url = String::from("https://api.github.com/repos/");
+    url.push_str(owner);
+    url.push('/');
+    url.push_str(repo);
+    url.push_str("/commits/");
+    url.push_str(git_ref);
+    url
 }
 
-/// The production [`RefResolver`]: `git ls-remote <url> <ref>`, argv-typed, no
-/// shell. When constructed [`GitLsRemoteResolver::with_token`], it injects a bearer
-/// header for github so **private** repos resolve in a credential-less daemon
-/// context (the fix for the private-input blocks a keychain-less launchd agent hit).
-/// Parses the leading SHA from the first output line.
+/// The production [`RefResolver`]: resolves a flake input's upstream head via the
+/// **GitHub REST API over HTTPS** — a `curl` GET of the commits endpoint (typed
+/// argv, no shell), with an optional `Authorization: Bearer` token. It runs **no
+/// git subprocess**, so git's credential helper (the macOS keychain GUI popup) is
+/// never invoked — a prompt is *structurally impossible*, not merely suppressed.
+/// A fine-grained token reads public repos and its own private repos; a repo it
+/// can't read returns HTTP 404 → `curl --fail` → a typed block, never a popup.
 #[derive(Clone, Debug, Default)]
-pub struct GitLsRemoteResolver {
+pub struct GitHubApiResolver {
     token: Option<String>,
 }
 
-impl GitLsRemoteResolver {
-    /// A resolver for public repos only (no auth).
+impl GitHubApiResolver {
+    /// A resolver for public repos only (unauthenticated; 60 req/hr rate limit).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A resolver that falls back to authenticating github with `token` for repos
-    /// that don't resolve anonymously (private). A `None`/empty token is equivalent
-    /// to [`GitLsRemoteResolver::new`].
+    /// A resolver authenticating with `token` (needed for private inputs and to lift
+    /// the API rate limit to 5000/hr). A `None`/empty token is unauthenticated.
     #[must_use]
     pub fn with_token(token: Option<String>) -> Self {
         Self {
             token: token.filter(|t| !t.is_empty()),
         }
     }
-
-    /// One `git ls-remote <url> <ref>` attempt, **fully non-interactive**: no
-    /// credential helper (`-c credential.helper=` → never invokes the macOS keychain
-    /// / a GUI password prompt) and no terminal prompt (`GIT_TERMINAL_PROMPT=0`). So
-    /// auth comes ONLY from the URL-embedded token; a repo it can't reach fails
-    /// silently (returns `None`) instead of blocking on a popup. Critical for a
-    /// launchd/systemd daemon — a prompt would hang the agent + spam the user.
-    fn try_ls_remote(url: &str, git_ref: &str) -> Option<String> {
-        let output = Command::new("git")
-            .args(["ls-remote", url, git_ref])
-            // Definitive no-prompt in a daemon: point BOTH config paths at /dev/null
-            // so git loads NO config at all — the system gitconfig sets
-            // credential.helper=osxkeychain (the GUI keychain popup), and neither
-            // `-c credential.helper=` nor GIT_CONFIG_NOSYSTEM reliably suppresses it on
-            // git's HTTP credential path; replacing the config paths does. Plus no
-            // terminal prompt and a null askpass. Auth comes ONLY from the URL token.
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_ASKPASS", "true")
-            .env("SSH_ASKPASS", "true")
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .next()
-            .map(str::to_owned)
-    }
 }
 
-impl RefResolver for GitLsRemoteResolver {
+impl RefResolver for GitHubApiResolver {
     fn resolve(&self, input: &LockedInput) -> Result<String, BlockReason> {
-        let url = input
-            .url
-            .as_deref()
-            .ok_or_else(|| FlakeError::Unresolvable(String::new()).block())?;
+        let owner = input.owner.as_deref().ok_or(BlockReason::Unreachable)?;
+        let repo = input.repo.as_deref().ok_or(BlockReason::Unreachable)?;
         let git_ref = input.git_ref.as_deref().unwrap_or("HEAD");
-        // Token-authenticated first (Basic auth works for both public and private);
-        // fall back to anonymous when there's no token or the token can't reach it.
+        let url = commits_api_url(owner, repo, git_ref);
+
+        let mut command = Command::new("curl");
+        command.args([
+            "-sS",
+            "--fail",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "User-Agent: formigueiro",
+        ]);
         if let Some(token) = &self.token {
-            if let Some(authed) = authed_url(url, token) {
-                if let Some(sha) = Self::try_ls_remote(&authed, git_ref) {
-                    return Ok(sha);
-                }
-            }
+            let mut auth = String::from("Authorization: Bearer ");
+            auth.push_str(token);
+            command.args(["-H", &auth]);
         }
-        Self::try_ls_remote(url, git_ref).ok_or(BlockReason::Unreachable)
+        let output = command.arg(&url).output().map_err(|_| BlockReason::Unreachable)?;
+        if !output.status.success() {
+            return Err(BlockReason::Unreachable);
+        }
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).map_err(|_| BlockReason::Unreachable)?;
+        json.get("sha")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or(BlockReason::Unreachable)
     }
 }
 
@@ -435,6 +426,8 @@ mod tests {
         let bm = lock.input("blackmatter").unwrap();
         assert_eq!(bm.url.as_deref(), Some("https://github.com/pleme-io/blackmatter"));
         assert_eq!(bm.git_ref.as_deref(), Some("main"));
+        assert_eq!(bm.owner.as_deref(), Some("pleme-io"));
+        assert_eq!(bm.repo.as_deref(), Some("blackmatter"));
         assert_eq!(lock.input_names(), vec!["blackmatter", "nixpkgs"]);
     }
 
@@ -445,20 +438,18 @@ mod tests {
     }
 
     #[test]
-    fn authed_url_embeds_the_token_as_basic_auth() {
+    fn commits_api_url_targets_the_github_rest_endpoint() {
         assert_eq!(
-            authed_url("https://github.com/pleme-io/blackmatter", "ghp_abc").as_deref(),
-            Some("https://x-access-token:ghp_abc@github.com/pleme-io/blackmatter")
+            commits_api_url("pleme-io", "blackmatter", "main"),
+            "https://api.github.com/repos/pleme-io/blackmatter/commits/main"
         );
-        // non-https (e.g. git@) has no https prefix → no rewrite
-        assert_eq!(authed_url("git://x/y", "t"), None);
     }
 
     #[test]
     fn with_token_keeps_a_real_token_and_drops_an_empty_one() {
-        assert!(GitLsRemoteResolver::with_token(Some("t".into())).token.is_some());
-        assert!(GitLsRemoteResolver::with_token(Some(String::new())).token.is_none());
-        assert!(GitLsRemoteResolver::new().token.is_none());
+        assert!(GitHubApiResolver::with_token(Some("t".into())).token.is_some());
+        assert!(GitHubApiResolver::with_token(Some(String::new())).token.is_none());
+        assert!(GitHubApiResolver::new().token.is_none());
     }
 
     #[test]
