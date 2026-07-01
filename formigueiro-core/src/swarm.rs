@@ -16,6 +16,7 @@
 //! Generic over the [`PlanStore`]: M0 holds a `Swarm<MemPlanStore>`; a durable
 //! deployment holds `Swarm<CrdPlanStore>` — the cycle logic is identical.
 
+use outorga::{PromotionDecision, ShadowReason};
 use serde::{Deserialize, Serialize};
 
 use crate::{Colony, ColonyOutcome, PlanStore, TickOutcome, UpdateEnv, UpdateSignal};
@@ -70,6 +71,87 @@ impl<S: PlanStore> Swarm<S> {
             report.record(outcome);
         }
         report
+    }
+
+    /// The cumulative **pending plan**: every tracked target that has a pending
+    /// mutation, with its promotion decision *as of `now_epoch`* — derived from the
+    /// [`PlanStore`] alone, **without re-observing upstream**. This is the
+    /// operator's live "what would the swarm do right now" view (and the input to a
+    /// Viggy `(defpromessa)` that watches how much is ready-to-apply vs held).
+    /// Targets whose kind is no longer registered are skipped.
+    #[must_use]
+    pub fn pending_plan(&self, now_epoch: i64) -> SwarmPlan {
+        let frozen = self.colony.is_frozen();
+        let pending = self
+            .store
+            .targets()
+            .into_iter()
+            .filter_map(|(kind, subject, state)| {
+                let to = state.pending_to.clone()?;
+                let policy = self.colony.policy_for(&kind)?;
+                let (would_apply, reason) = match policy.decide(&state, now_epoch, frozen) {
+                    PromotionDecision::Apply => (true, None),
+                    PromotionDecision::Shadow(r) => (false, Some(r)),
+                };
+                Some(PendingTarget {
+                    kind,
+                    subject,
+                    to,
+                    would_apply,
+                    reason,
+                })
+            })
+            .collect();
+        SwarmPlan {
+            at_epoch: now_epoch,
+            pending,
+        }
+    }
+}
+
+/// A pending mutation the swarm is tracking, with its promotion decision as of the
+/// plan's instant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingTarget {
+    /// The update kind.
+    pub kind: String,
+    /// The subject.
+    pub subject: String,
+    /// The value it would become.
+    pub to: String,
+    /// Whether it would be applied right now (promotion granted).
+    pub would_apply: bool,
+    /// If held, why (the promotion shadow reason).
+    pub reason: Option<ShadowReason>,
+}
+
+/// The cumulative pending plan across every tracked target — a live snapshot,
+/// derived from the store without re-observing upstream.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmPlan {
+    /// The instant the plan was taken.
+    pub at_epoch: i64,
+    /// Every pending mutation.
+    pub pending: Vec<PendingTarget>,
+}
+
+impl SwarmPlan {
+    /// No target has a pending mutation.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+    /// How many pending mutations would apply right now (promotion granted).
+    #[must_use]
+    pub fn ready_to_apply(&self) -> usize {
+        self.pending.iter().filter(|p| p.would_apply).count()
+    }
+    /// How many pending mutations are held (promotion not yet granted).
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.pending.iter().filter(|p| !p.would_apply).count()
     }
 }
 
@@ -236,5 +318,31 @@ mod tests {
         let r = SwarmReport::empty(5);
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains("\"atEpoch\":5") && j.contains("\"upToDate\":0"), "got {j}");
+    }
+
+    #[test]
+    fn pending_plan_shows_held_then_ready_from_the_store_alone() {
+        let mut s = Swarm::new(
+            Colony::new().register(
+                Box::new(FlakeInputKind),
+                PromotionPolicy::new(PromotionMode::ShadowConfirmEffect).confirm_after(600),
+            ),
+            MemPlanStore::new(),
+        );
+        // one cycle records the pending target (window starts at 10_000).
+        s.run_cycle(&[UpdateSignal::new("flake-input", "stale")], &Env, 10_000);
+        // 100s later the plan (derived from the store, no re-observe) shows it HELD.
+        let held = s.pending_plan(10_100);
+        assert_eq!(held.pending.len(), 1);
+        assert_eq!((held.ready_to_apply(), held.held()), (0, 1));
+        assert_eq!(held.pending[0].to, "new");
+        assert!(matches!(
+            held.pending[0].reason,
+            Some(ShadowReason::ConfirmPending { .. })
+        ));
+        // 600s after the window start the SAME target is now ready-to-apply.
+        let ready = s.pending_plan(10_600);
+        assert_eq!((ready.ready_to_apply(), ready.held()), (1, 0));
+        assert!(!ready.is_empty());
     }
 }

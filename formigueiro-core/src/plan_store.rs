@@ -126,6 +126,9 @@ pub trait PlanStore {
     fn get(&self, kind: &str, subject: &str) -> Option<TargetState>;
     /// Write the state for a target.
     fn put(&mut self, kind: &str, subject: &str, state: TargetState);
+    /// Every tracked `(kind, subject, state)` — for a fleet-wide pending view.
+    /// (The durable CRD/Postgres impl backs this with a prefix scan.)
+    fn targets(&self) -> Vec<(String, String, TargetState)>;
 }
 
 /// The in-memory [`PlanStore`] (M0 / tests). A durable impl (operator CRD /
@@ -159,6 +162,12 @@ impl PlanStore for MemPlanStore {
     }
     fn put(&mut self, kind: &str, subject: &str, state: TargetState) {
         self.map.insert((kind.to_owned(), subject.to_owned()), state);
+    }
+    fn targets(&self) -> Vec<(String, String, TargetState)> {
+        self.map
+            .iter()
+            .map(|((k, s), st)| (k.clone(), s.clone(), st.clone()))
+            .collect()
     }
 }
 
