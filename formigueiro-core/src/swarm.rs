@@ -16,6 +16,8 @@
 //! Generic over the [`PlanStore`]: M0 holds a `Swarm<MemPlanStore>`; a durable
 //! deployment holds `Swarm<CrdPlanStore>` — the cycle logic is identical.
 
+use std::fmt;
+
 use outorga::{PromotionDecision, ShadowReason};
 use serde::{Deserialize, Serialize};
 
@@ -164,6 +166,29 @@ impl SwarmPlan {
     #[must_use]
     pub fn held(&self) -> usize {
         self.pending.iter().filter(|p| !p.would_apply).count()
+    }
+}
+
+impl fmt::Display for SwarmPlan {
+    /// A human summary: a header line + one bullet per pending target. `write!`
+    /// inside a `Display` impl is the typed render seam (no `format!()`).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.pending.is_empty() {
+            return write!(f, "formigueiro: fleet at head — nothing pending");
+        }
+        writeln!(
+            f,
+            "formigueiro: {} update(s) pending ({} ready, {} held)",
+            self.pending.len(),
+            self.ready_to_apply(),
+            self.held()
+        )?;
+        for p in &self.pending {
+            let short: String = p.to.chars().take(12).collect();
+            let state = if p.would_apply { "ready" } else { "held" };
+            writeln!(f, "  • {}/{} → {short} [{state}]", p.kind, p.subject)?;
+        }
+        Ok(())
     }
 }
 
@@ -370,5 +395,24 @@ mod tests {
         let src = VecSource(vec![UpdateSignal::new("flake-input", "stale")]);
         let r = s.run_cycle_from(&src, &Env, 1);
         assert_eq!((r.total(), r.applied), (1, 1)); // Effect + a pending bump → applied
+    }
+
+    #[test]
+    fn plan_renders_a_human_summary() {
+        assert!(SwarmPlan::default().to_string().contains("at head"));
+        let plan = SwarmPlan {
+            at_epoch: 0,
+            pending: vec![PendingTarget {
+                kind: "flake-input".into(),
+                subject: "cachix".into(),
+                to: "e1d8f8cdeee6ea513".into(),
+                would_apply: false,
+                reason: Some(ShadowReason::Frozen),
+            }],
+        };
+        let s = plan.to_string();
+        assert!(s.contains("1 update(s) pending") && s.contains("cachix") && s.contains("held"));
+        assert!(s.contains("e1d8f8cdeee6"), "shows the target");
+        assert!(!s.contains("e1d8f8cdeee6ea513"), "truncated to 12 chars");
     }
 }

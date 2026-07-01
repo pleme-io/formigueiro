@@ -26,7 +26,7 @@ use clap::Parser;
 use formigueiro_config::FormigueiroConfig;
 use formigueiro_core::{
     execute_applies_paced, Colony, ConvergenceTracker, FlakeInputKind, LeakyBucketPacer,
-    MemPlanStore, NullExecutor, ReportSink, Swarm, SwarmDaemon, SwarmReport, SystemClock,
+    MemPlanStore, NullExecutor, ReportSink, Swarm, SwarmDaemon, SwarmPlan, SwarmReport, SystemClock,
     KIND_CATALOG,
 };
 use formigueiro_flake::{
@@ -63,12 +63,21 @@ struct Args {
     /// Print the typed catalog of supported update kinds (JSON) and exit.
     #[arg(long)]
     list_kinds: bool,
+    /// Print a human summary of the daemon's latest pending plan and exit.
+    #[arg(long)]
+    status: bool,
+    /// Where the daemon publishes its latest plan / `--status` reads it.
+    #[arg(long)]
+    state_file: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.list_kinds {
         return emit_json(&KIND_CATALOG); // the swarm describes itself, then exits
+    }
+    if args.status {
+        return print_status(&state_file(&args)); // human view of the latest plan
     }
     let mut config = load_config(args.config.as_deref())?;
     if args.freeze {
@@ -100,6 +109,7 @@ fn main() -> Result<()> {
         let report = daemon.tick(&source, &env); // StdoutSink emits the report
         let plan = daemon.swarm().pending_plan(report.at_epoch);
         emit_json(&plan)?; // the operator's "what would happen next"
+        let _ = write_plan(&state_file(&args), &plan); // publish for `--status` (best-effort)
 
         // Execute PROMOTED mutations only — structurally gated (an AppliedMutation
         // exists only for a TickOutcome::Applied) and rate-bounded by the pacer
@@ -177,6 +187,37 @@ fn read_github_token() -> Option<String> {
     } else {
         Some(token.to_owned())
     }
+}
+
+/// Where the daemon publishes its plan / `--status` reads it: the flag, else the
+/// XDG-ish `~/.local/state/formigueiro/plan.json`.
+fn state_file(args: &Args) -> PathBuf {
+    args.state_file.clone().unwrap_or_else(|| {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".local/state/formigueiro/plan.json")
+    })
+}
+
+/// Atomically publish the latest plan (write a temp, then rename) so `--status`
+/// never reads a half-written file.
+fn write_plan(path: &Path, plan: &SwarmPlan) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).context("create state dir")?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let file = std::fs::File::create(&tmp).context("create state tmp")?;
+    serde_json::to_writer(file, plan).context("write plan")?;
+    std::fs::rename(&tmp, path).context("publish plan")?;
+    Ok(())
+}
+
+/// Read the published plan and print its human [`SwarmPlan`] render.
+fn print_status(path: &Path) -> Result<()> {
+    let json = std::fs::read_to_string(path)
+        .context("no plan yet — has the daemon run a cycle? (check the state file)")?;
+    let plan: SwarmPlan = serde_json::from_str(&json).context("parse published plan")?;
+    print!("{plan}");
+    Ok(())
 }
 
 /// Read + parse `<flake_dir>/flake.lock`.
