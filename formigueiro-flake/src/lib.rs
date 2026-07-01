@@ -249,11 +249,16 @@ impl GitLsRemoteResolver {
         }
     }
 
-    /// One `git ls-remote <url> <ref>` attempt. `None` on any failure so the caller
-    /// can try the next auth mode.
+    /// One `git ls-remote <url> <ref>` attempt, **fully non-interactive**: no
+    /// credential helper (`-c credential.helper=` → never invokes the macOS keychain
+    /// / a GUI password prompt) and no terminal prompt (`GIT_TERMINAL_PROMPT=0`). So
+    /// auth comes ONLY from the URL-embedded token; a repo it can't reach fails
+    /// silently (returns `None`) instead of blocking on a popup. Critical for a
+    /// launchd/systemd daemon — a prompt would hang the agent + spam the user.
     fn try_ls_remote(url: &str, git_ref: &str) -> Option<String> {
         let output = Command::new("git")
-            .args(["ls-remote", url, git_ref])
+            .args(["-c", "credential.helper=", "ls-remote", url, git_ref])
+            .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .ok()?;
         if !output.status.success() {
