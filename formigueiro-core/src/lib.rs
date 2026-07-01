@@ -25,11 +25,13 @@ use outorga::{Observation, PromotionDecision, PromotionPolicy, ShadowReason};
 use serde::{Deserialize, Serialize};
 
 pub mod colony;
+pub mod daemon;
 pub mod plan_store;
 pub mod swarm;
 pub use colony::{Colony, ColonyOutcome};
+pub use daemon::{Clock, NullSink, ReportSink, SwarmDaemon, SystemClock};
 pub use plan_store::{fold, MemPlanStore, PlanStore, TargetState};
-pub use swarm::{Swarm, SwarmReport};
+pub use swarm::{PendingTarget, Swarm, SwarmPlan, SwarmReport};
 
 /// An ingested update event: "input `subject` of kind `kind` may have moved to
 /// `revision`". `revision` is a hint (the event's claimed new value); the kind's
