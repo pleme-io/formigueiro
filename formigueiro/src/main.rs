@@ -25,8 +25,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use formigueiro_config::FormigueiroConfig;
 use formigueiro_core::{
-    execute_applies_paced, Colony, FlakeInputKind, LeakyBucketPacer, MemPlanStore, NullExecutor,
-    ReportSink, Swarm, SwarmDaemon, SwarmReport, SystemClock,
+    execute_applies_paced, Colony, ConvergenceTracker, FlakeInputKind, LeakyBucketPacer,
+    MemPlanStore, NullExecutor, ReportSink, Swarm, SwarmDaemon, SwarmReport, SystemClock,
 };
 use formigueiro_flake::{
     FlakeEnv, FlakeLock, FlakeSignalSource, GitLsRemoteResolver, NixFlakeExecutor,
@@ -56,6 +56,9 @@ struct Args {
     /// Default is the NullExecutor — even a promoted mutation does not write.
     #[arg(long)]
     apply: bool,
+    /// Consecutive quiescent cycles required to report the fleet converged (at head).
+    #[arg(long, default_value_t = 2)]
+    stable_cycles: u32,
 }
 
 fn main() -> Result<()> {
@@ -75,6 +78,7 @@ fn main() -> Result<()> {
     // Bound the mutation rate across cycles: burst = the configured burst, refilling
     // conservatively (M0: ~1/min; samba does the real quota-driven pacing in prod).
     let mut pacer = LeakyBucketPacer::new(f64::from(config.pacing.burst.max(1)), 1.0 / 60.0);
+    let mut convergence = ConvergenceTracker::new(args.stable_cycles);
 
     loop {
         // Re-read the lock each cycle — it changes after an apply, so a fresh
@@ -105,6 +109,9 @@ fn main() -> Result<()> {
         for result in &paced {
             emit_json(result)?;
         }
+
+        // Fold this cycle into the convergence judgment (sustained quiescence = at head).
+        emit_json(&convergence.observe(&report))?;
 
         if !args.watch {
             break;

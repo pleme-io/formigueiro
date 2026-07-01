@@ -26,10 +26,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod apply;
 pub mod colony;
+pub mod converge;
 pub mod daemon;
 pub mod pace;
 pub mod plan_store;
 pub mod swarm;
+pub use converge::{Convergence, ConvergenceTracker};
 pub use apply::{
     execute_applies, AppliedMutation, ApplyError, ApplyExecutor, ApplyReceipt, NullExecutor,
 };
