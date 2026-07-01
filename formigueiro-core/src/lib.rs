@@ -26,8 +26,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod apply;
 pub mod colony;
+pub mod constrain;
 pub mod converge;
 pub mod daemon;
+pub use constrain::{AllowAll, Blocklist, ConstrainedKind, Constraint};
 pub mod pace;
 pub mod plan_store;
 pub mod swarm;
@@ -77,6 +79,9 @@ pub enum BlockReason {
     Unreachable,
     /// Another writer owns the subject.
     Conflict,
+    /// A newer value exists but a constraint forbids bumping to it (e.g. a
+    /// pre-release, or a value outside an allowed set). Reported, never promoted.
+    Constrained,
     /// Any other typed error.
     Error(String),
 }
