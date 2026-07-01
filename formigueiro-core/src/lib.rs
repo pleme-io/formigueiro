@@ -171,6 +171,33 @@ impl UpdateKind for FlakeInputKind {
     }
 }
 
+/// A generic **named diff kind**: "compare current vs latest" — the shape most
+/// update kinds share, differing only in *name* and their [`UpdateEnv`]. One value
+/// serves every diff-based domain (`image-tag`, `chart-version`, `cargo-dep`, …);
+/// the domain crate supplies the matching env. ([`FlakeInputKind`] is the flake
+/// domain's named equivalent of `DiffKind::new("flake-input")`.)
+#[derive(Clone, Copy, Debug)]
+pub struct DiffKind {
+    name: &'static str,
+}
+
+impl DiffKind {
+    /// A diff kind reporting `name`.
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+}
+
+impl UpdateKind for DiffKind {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn shadow(&self, sig: &UpdateSignal, env: &dyn UpdateEnv) -> ShadowOutcome {
+        diff_shadow(sig, env)
+    }
+}
+
 /// One formiga tick's typed outcome — the composition of a shadow with a
 /// promotion decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,6 +358,23 @@ mod tests {
             latest: Ok("abc"),
         };
         assert_eq!(FlakeInputKind.shadow(&sig(), &env), ShadowOutcome::UpToDate);
+    }
+
+    #[test]
+    fn diffkind_is_a_generic_named_diff_shadow() {
+        let k = DiffKind::new("image-tag");
+        assert_eq!(k.name(), "image-tag");
+        let bumped = MockEnv {
+            current: Some("old"),
+            latest: Ok("new"),
+        };
+        assert_eq!(
+            k.shadow(&sig(), &bumped),
+            ShadowOutcome::WouldApply {
+                from: "old".into(),
+                to: "new".into()
+            }
+        );
     }
 
     #[test]
