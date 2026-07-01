@@ -24,10 +24,14 @@
 use outorga::{Observation, PromotionDecision, PromotionPolicy, ShadowReason};
 use serde::{Deserialize, Serialize};
 
+pub mod apply;
 pub mod colony;
 pub mod daemon;
 pub mod plan_store;
 pub mod swarm;
+pub use apply::{
+    execute_applies, AppliedMutation, ApplyError, ApplyExecutor, ApplyReceipt, NullExecutor,
+};
 pub use colony::{Colony, ColonyOutcome};
 pub use daemon::{Clock, NullSink, ReportSink, SwarmDaemon, SystemClock};
 pub use plan_store::{fold, MemPlanStore, PlanStore, TargetState};

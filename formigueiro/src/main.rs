@@ -25,9 +25,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use formigueiro_config::FormigueiroConfig;
 use formigueiro_core::{
-    Colony, FlakeInputKind, MemPlanStore, ReportSink, Swarm, SwarmDaemon, SwarmReport, SystemClock,
+    execute_applies, Colony, FlakeInputKind, MemPlanStore, NullExecutor, ReportSink, Swarm,
+    SwarmDaemon, SwarmReport, SystemClock,
 };
-use formigueiro_flake::{FlakeEnv, FlakeLock, FlakeSignalSource, GitLsRemoteResolver};
+use formigueiro_flake::{
+    FlakeEnv, FlakeLock, FlakeSignalSource, GitLsRemoteResolver, NixFlakeExecutor,
+};
 use shikumi::TieredConfig;
 
 /// The fleet update-swarm daemon (shadow-first).
@@ -49,6 +52,10 @@ struct Args {
     /// Force the fleet freeze on (shadow-only regardless of config).
     #[arg(long)]
     freeze: bool,
+    /// Opt in to the write path: execute promoted mutations (`nix flake update`).
+    /// Default is the NullExecutor — even a promoted mutation does not write.
+    #[arg(long)]
+    apply: bool,
 }
 
 fn main() -> Result<()> {
@@ -76,6 +83,18 @@ fn main() -> Result<()> {
         let report = daemon.tick(&source, &env); // StdoutSink emits the report
         let plan = daemon.swarm().pending_plan(report.at_epoch);
         emit_json(&plan)?; // the operator's "what would happen next"
+
+        // Execute PROMOTED mutations only — structurally gated (an AppliedMutation
+        // exists only for a TickOutcome::Applied). Default NullExecutor = shadow-
+        // only, so promotion still does not write unless `--apply` is set.
+        let applied = if args.apply {
+            execute_applies(&report, &NixFlakeExecutor::new(&args.flake))
+        } else {
+            execute_applies(&report, &NullExecutor)
+        };
+        for result in &applied {
+            emit_json(result)?;
+        }
 
         if !args.watch {
             break;

@@ -21,9 +21,13 @@
 //! [TYPED-SPEC triplet]: https://github.com/pleme-io/theory (§ TYPED-SPEC + INTERPRETER TRIPLET)
 
 use std::fmt;
+use std::path::PathBuf;
 use std::process::Command;
 
-use formigueiro_core::{BlockReason, SignalSource, UpdateEnv, UpdateSignal};
+use formigueiro_core::{
+    AppliedMutation, ApplyError, ApplyExecutor, ApplyReceipt, BlockReason, SignalSource, UpdateEnv,
+    UpdateSignal,
+};
 use serde::{Deserialize, Serialize};
 
 /// A typed error from parsing or resolving a flake. Its [`fmt::Display`] impl is
@@ -283,6 +287,44 @@ impl SignalSource for FlakeSignalSource<'_> {
     }
 }
 
+/// The real `flake-input` [`ApplyExecutor`]: runs `nix flake update <subject>` in a
+/// flake directory (**typed argv, no shell**) to bump one input's lock. Reached
+/// only for a promoted mutation (an [`AppliedMutation`] can't be built otherwise),
+/// and only when explicitly wired — the swarm's default is [`NullExecutor`].
+/// Handles only `flake-input`; other kinds are [`ApplyError::Unsupported`].
+pub struct NixFlakeExecutor {
+    flake_dir: PathBuf,
+}
+
+impl NixFlakeExecutor {
+    /// An executor that mutates the flake at `flake_dir`.
+    pub fn new(flake_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            flake_dir: flake_dir.into(),
+        }
+    }
+}
+
+impl ApplyExecutor for NixFlakeExecutor {
+    fn apply(&self, mutation: &AppliedMutation) -> Result<ApplyReceipt, ApplyError> {
+        if mutation.kind() != "flake-input" {
+            return Err(ApplyError::Unsupported(mutation.kind().to_owned()));
+        }
+        let output = Command::new("nix")
+            .args(["flake", "update", mutation.subject()])
+            .current_dir(&self.flake_dir)
+            .output()
+            .map_err(|e| ApplyError::Failed(e.to_string()))?;
+        if output.status.success() {
+            Ok(ApplyReceipt::of(mutation))
+        } else {
+            Err(ApplyError::Failed(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +469,27 @@ mod tests {
                 .tick_outcome(),
             Some(TickOutcome::Shadowed { .. })
         ));
+    }
+
+    #[test]
+    fn nix_executor_rejects_non_flake_kinds_without_running_nix() {
+        use formigueiro_core::ColonyOutcome;
+        // an Applied outcome for a kind this executor doesn't handle
+        let outcome = ColonyOutcome::Ticked {
+            kind: "image-tag".into(),
+            subject: "x".into(),
+            outcome: TickOutcome::Applied {
+                from: "a".into(),
+                to: "b".into(),
+            },
+        };
+        let mutation = AppliedMutation::from_outcome(&outcome).unwrap();
+        let exec = NixFlakeExecutor::new("/nonexistent");
+        // returns Unsupported BEFORE ever spawning nix (no write, no subprocess).
+        assert_eq!(
+            exec.apply(&mutation),
+            Err(ApplyError::Unsupported("image-tag".to_owned()))
+        );
     }
 
     // a minimal Observation for the direct ingest assertion above
