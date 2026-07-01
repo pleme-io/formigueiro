@@ -24,6 +24,9 @@
 use outorga::{Observation, PromotionDecision, PromotionPolicy, ShadowReason};
 use serde::{Deserialize, Serialize};
 
+pub mod colony;
+pub use colony::{Colony, ColonyOutcome};
+
 /// An ingested update event: "input `subject` of kind `kind` may have moved to
 /// `revision`". `revision` is a hint (the event's claimed new value); the kind's
 /// shadow re-observes the truth from the [`UpdateEnv`].
