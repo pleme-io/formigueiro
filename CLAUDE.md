@@ -9,6 +9,7 @@ Operator face: `pleme-io/docs/formigueiro.md`. Skill: `formigueiro`.
 | Crate | Role | Deps |
 |---|---|---|
 | **`outorga`** | The **generic** progressive-authority promotion FSM (`Shadow → ShadowConfirmEffect → Effect`, two-key freeze). Pure, traited, exhaustively tested. A k8s-free lift of breathe's promotion lifecycle — **breathe is the intended 2nd consumer** (three-site rule); extract to its own repo when it adopts. | serde only |
+| **`formigueiro-core`** | The pure algebra of the swarm: `UpdateSignal`, the `UpdateKind` trait + its `shadow` (compute-what-would-change, no write), the mockable `UpdateEnv` boundary, and the `Formiga::tick` that composes a `ShadowOutcome` with an `outorga` promotion decision into one typed `TickOutcome`. Pure (no I/O/clock/task), traited, exhaustively tested. The M0 shadow-only algebra. | outorga only |
 | **`formigueiro-config`** | The `shikumi::TieredConfig` surface: update kinds, per-kind promotion policy (→ `outorga`), the fleet `freeze` switch, NATS ingestion, samba pacing. `prescribed_default()` is **shadow-first** (no kind ships in blind `Effect`). | outorga, shikumi |
 
 ## Standing rules
