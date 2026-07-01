@@ -1,0 +1,20 @@
+[package]
+name = "formigueiro-config"
+version = "0.1.0"
+description = "The shikumi-typed configuration surface for the formigueiro fleet update swarm: tiered (bare/prescribed) config for update kinds, per-kind promotion policy (via outorga), the fleet freeze switch, event ingestion, and samba pacing."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+outorga = { path = "../outorga" }
+shikumi = { git = "https://github.com/pleme-io/shikumi" }
+
+[dev-dependencies]
+serde_json.workspace = true
+serde_yaml = "0.9"
+
+[lints]
+workspace = true
