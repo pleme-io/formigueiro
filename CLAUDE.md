@@ -22,8 +22,11 @@ Operator face: `pleme-io/docs/formigueiro.md`. Skill: `formigueiro`.
   up-to-date / blocked outcome yields `None`, so a write without a promotion
   decision is **unrepresentable**, not merely discouraged. The default executor is
   `NullExecutor` (refuses every write); the daemon writes only under an explicit
-  `--apply` (and even then, freeze + `outorga` gate *which* mutations apply).
-  `prescribed_default` never ships a kind in `Effect`.
+  `--apply` (and even then, freeze + `outorga` gate *which* mutations apply). The
+  write path is also **rate-bounded**: a `Pacer` (M0 `LeakyBucketPacer`; samba in
+  prod) admits mutations at a bounded rate, and what it won't admit is **deferred,
+  not dropped** (retried next cycle). `prescribed_default` never ships a kind in
+  `Effect`.
 - **outorga stays generic.** It has zero formigueiro dependency and zero k8s coupling,
   so breathe (and any future promotion consumer) stands on the same tested FSM. Do not
   leak update-swarm concepts into it.

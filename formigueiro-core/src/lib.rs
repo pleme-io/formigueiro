@@ -27,11 +27,13 @@ use serde::{Deserialize, Serialize};
 pub mod apply;
 pub mod colony;
 pub mod daemon;
+pub mod pace;
 pub mod plan_store;
 pub mod swarm;
 pub use apply::{
     execute_applies, AppliedMutation, ApplyError, ApplyExecutor, ApplyReceipt, NullExecutor,
 };
+pub use pace::{execute_applies_paced, LeakyBucketPacer, PacedApply, Pacer};
 pub use colony::{Colony, ColonyOutcome};
 pub use daemon::{Clock, NullSink, ReportSink, SwarmDaemon, SystemClock};
 pub use plan_store::{fold, MemPlanStore, PlanStore, TargetState};

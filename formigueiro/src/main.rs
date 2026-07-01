@@ -25,8 +25,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use formigueiro_config::FormigueiroConfig;
 use formigueiro_core::{
-    execute_applies, Colony, FlakeInputKind, MemPlanStore, NullExecutor, ReportSink, Swarm,
-    SwarmDaemon, SwarmReport, SystemClock,
+    execute_applies_paced, Colony, FlakeInputKind, LeakyBucketPacer, MemPlanStore, NullExecutor,
+    ReportSink, Swarm, SwarmDaemon, SwarmReport, SystemClock,
 };
 use formigueiro_flake::{
     FlakeEnv, FlakeLock, FlakeSignalSource, GitLsRemoteResolver, NixFlakeExecutor,
@@ -72,6 +72,9 @@ fn main() -> Result<()> {
         StdoutSink,
     );
     let resolver = GitLsRemoteResolver;
+    // Bound the mutation rate across cycles: burst = the configured burst, refilling
+    // conservatively (M0: ~1/min; samba does the real quota-driven pacing in prod).
+    let mut pacer = LeakyBucketPacer::new(f64::from(config.pacing.burst.max(1)), 1.0 / 60.0);
 
     loop {
         // Re-read the lock each cycle — it changes after an apply, so a fresh
@@ -85,14 +88,21 @@ fn main() -> Result<()> {
         emit_json(&plan)?; // the operator's "what would happen next"
 
         // Execute PROMOTED mutations only — structurally gated (an AppliedMutation
-        // exists only for a TickOutcome::Applied). Default NullExecutor = shadow-
-        // only, so promotion still does not write unless `--apply` is set.
-        let applied = if args.apply {
-            execute_applies(&report, &NixFlakeExecutor::new(&args.flake))
+        // exists only for a TickOutcome::Applied) and rate-bounded by the pacer
+        // (what it won't admit is Deferred, retried next cycle — never dropped).
+        // Default NullExecutor = shadow-only: promotion still does not write unless
+        // `--apply` is set.
+        let paced = if args.apply {
+            execute_applies_paced(
+                &report,
+                &NixFlakeExecutor::new(&args.flake),
+                &mut pacer,
+                report.at_epoch,
+            )
         } else {
-            execute_applies(&report, &NullExecutor)
+            execute_applies_paced(&report, &NullExecutor, &mut pacer, report.at_epoch)
         };
-        for result in &applied {
+        for result in &paced {
             emit_json(result)?;
         }
 
