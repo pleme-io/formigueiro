@@ -18,16 +18,19 @@
 //! the shipped config is shadow-first — nothing writes blind. Output is typed JSON
 //! (serde), errors are typed (anyhow); no `format!()` of emitted text.
 
+mod store;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use store::FilePlanStore;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use formigueiro_config::FormigueiroConfig;
 use formigueiro_core::{
     execute_applies_paced, Colony, ConvergenceTracker, FlakeInputKind, LeakyBucketPacer,
-    MemPlanStore, NullExecutor, ReportSink, Swarm, SwarmDaemon, SwarmPlan, SwarmReport, SystemClock,
-    KIND_CATALOG,
+    NullExecutor, ReportSink, Swarm, SwarmDaemon, SwarmPlan, SwarmReport, SystemClock, KIND_CATALOG,
 };
 use formigueiro_flake::{
     FlakeEnv, FlakeLock, FlakeSignalSource, GitLsRemoteResolver, NixFlakeExecutor,
@@ -85,8 +88,10 @@ fn main() -> Result<()> {
     }
     let interval = args.interval.unwrap_or(config.tick_interval_secs).max(1);
 
+    // Durable store: a promotion window survives a daemon restart (an hourly launchd
+    // relaunch, a reboot). The workstation flavor is a file; a server uses Postgres.
     let mut daemon = SwarmDaemon::new(
-        Swarm::new(build_colony(&config), MemPlanStore::new()),
+        Swarm::new(build_colony(&config), FilePlanStore::load(store_file(&args))),
         SystemClock,
         StdoutSink,
     );
@@ -196,6 +201,12 @@ fn state_file(args: &Args) -> PathBuf {
         PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join(".local/state/formigueiro/plan.json")
     })
+}
+
+/// Where the durable [`FilePlanStore`] persists per-target windows: a sibling of the
+/// status plan (`~/.local/state/formigueiro/store.json`).
+fn store_file(args: &Args) -> PathBuf {
+    state_file(args).with_file_name("store.json")
 }
 
 /// Atomically publish the latest plan (write a temp, then rename) so `--status`

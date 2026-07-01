@@ -257,8 +257,18 @@ impl GitLsRemoteResolver {
     /// launchd/systemd daemon — a prompt would hang the agent + spam the user.
     fn try_ls_remote(url: &str, git_ref: &str) -> Option<String> {
         let output = Command::new("git")
-            .args(["-c", "credential.helper=", "ls-remote", url, git_ref])
+            .args(["ls-remote", url, git_ref])
+            // Definitive no-prompt in a daemon: point BOTH config paths at /dev/null
+            // so git loads NO config at all — the system gitconfig sets
+            // credential.helper=osxkeychain (the GUI keychain popup), and neither
+            // `-c credential.helper=` nor GIT_CONFIG_NOSYSTEM reliably suppresses it on
+            // git's HTTP credential path; replacing the config paths does. Plus no
+            // terminal prompt and a null askpass. Auth comes ONLY from the URL token.
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ASKPASS", "true")
+            .env("SSH_ASKPASS", "true")
             .output()
             .ok()?;
         if !output.status.success() {
