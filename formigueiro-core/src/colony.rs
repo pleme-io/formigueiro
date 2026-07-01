@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use outorga::{Observation, PromotionPolicy};
 use serde::{Deserialize, Serialize};
 
+use crate::plan_store::{fold, PlanStore};
 use crate::{Formiga, TickOutcome, UpdateEnv, UpdateKind, UpdateSignal};
 
 /// One registered update kind + its promotion policy.
@@ -109,6 +110,39 @@ impl Colony {
                     kind: sig.kind.clone(),
                     subject: sig.subject.clone(),
                     outcome,
+                }
+            }
+        }
+    }
+
+    /// The full **temporal** tick: shadow the signal, **fold** the outcome into the
+    /// [`PlanStore`] (so a `ShadowConfirmEffect` window accrues across ticks), then
+    /// decide promotion using the stored [`crate::TargetState`] as the observation.
+    /// This is the tick the swarm daemon runs; [`Colony::ingest`] is the stateless
+    /// variant for callers that supply their own observation. The shadow is
+    /// computed once (folded, then consumed by the decision).
+    pub fn tick_with_store<S: PlanStore>(
+        &self,
+        store: &mut S,
+        sig: &UpdateSignal,
+        env: &dyn UpdateEnv,
+        now_epoch: i64,
+    ) -> ColonyOutcome {
+        match self.entries.get(&sig.kind) {
+            None => ColonyOutcome::UnknownKind {
+                kind: sig.kind.clone(),
+                subject: sig.subject.clone(),
+            },
+            Some(e) => {
+                let outcome = e.kind.shadow(sig, env);
+                let prev = store.get(&sig.kind, &sig.subject);
+                let state = fold(prev.as_ref(), &outcome, now_epoch);
+                store.put(&sig.kind, &sig.subject, state.clone());
+                let tick = Formiga::new(e.policy).decide(outcome, &state, now_epoch, self.frozen);
+                ColonyOutcome::Ticked {
+                    kind: sig.kind.clone(),
+                    subject: sig.subject.clone(),
+                    outcome: tick,
                 }
             }
         }
@@ -259,5 +293,43 @@ mod tests {
     fn colony_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Colony>();
+    }
+
+    #[test]
+    fn tick_with_store_matures_the_window_across_ticks_then_promotes() {
+        use crate::MemPlanStore;
+        // ShadowConfirmEffect, 1800s window — the whole point of the PlanStore.
+        let c = Colony::new().register(
+            Box::new(FlakeInputKind),
+            PromotionPolicy::new(PromotionMode::ShadowConfirmEffect).confirm_after(1800),
+        );
+        let mut store = MemPlanStore::new();
+        let sig = UpdateSignal::new("flake-input", "blackmatter");
+        let env = Env(Some("old"), Ok("new")); // a persistent pending mutation
+        let t0 = 1_000_000;
+        // T0: first sighting → held, window just started (0s of 1800).
+        let out0 = c.tick_with_store(&mut store, &sig, &env, t0);
+        assert!(
+            matches!(
+                out0.tick_outcome(),
+                Some(TickOutcome::Shadowed {
+                    reason: ShadowReason::ConfirmPending { held_secs: 0, need_secs: 1800 },
+                    ..
+                })
+            ),
+            "first tick holds with a fresh window, got {out0:?}"
+        );
+        // still maturing at T0+1000.
+        let mid = c.tick_with_store(&mut store, &sig, &env, t0 + 1000);
+        assert!(mid.tick_outcome().is_some_and(|o| matches!(
+            o,
+            TickOutcome::Shadowed { reason: ShadowReason::ConfirmPending { held_secs: 1000, .. }, .. }
+        )));
+        // T0+1800: the SAME target has held the whole window → promoted.
+        let done = c.tick_with_store(&mut store, &sig, &env, t0 + 1800);
+        assert!(
+            done.tick_outcome().is_some_and(TickOutcome::is_applied),
+            "window elapsed → apply, got {done:?}"
+        );
     }
 }

@@ -25,7 +25,9 @@ use outorga::{Observation, PromotionDecision, PromotionPolicy, ShadowReason};
 use serde::{Deserialize, Serialize};
 
 pub mod colony;
+pub mod plan_store;
 pub use colony::{Colony, ColonyOutcome};
+pub use plan_store::{fold, MemPlanStore, PlanStore, TargetState};
 
 /// An ingested update event: "input `subject` of kind `kind` may have moved to
 /// `revision`". `revision` is a hint (the event's claimed new value); the kind's
@@ -214,7 +216,23 @@ impl Formiga {
         now_epoch: i64,
         frozen: bool,
     ) -> TickOutcome {
-        match kind.shadow(sig, env) {
+        self.decide(kind.shadow(sig, env), obs, now_epoch, frozen)
+    }
+
+    /// Decide from an ALREADY-computed shadow outcome — the post-shadow half of
+    /// [`Formiga::tick`], for callers that already hold the [`ShadowOutcome`] (e.g.
+    /// a [`crate::PlanStore`]-driven tick that must fold the outcome into the store
+    /// before deciding, and must not shadow twice). UpToDate / Blocked
+    /// short-circuit; a WouldApply runs the two-key promotion decision.
+    #[must_use]
+    pub fn decide(
+        &self,
+        outcome: ShadowOutcome,
+        obs: &impl Observation,
+        now_epoch: i64,
+        frozen: bool,
+    ) -> TickOutcome {
+        match outcome {
             ShadowOutcome::UpToDate => TickOutcome::UpToDate,
             ShadowOutcome::Blocked(r) => TickOutcome::Blocked(r),
             ShadowOutcome::WouldApply { from, to } => {
