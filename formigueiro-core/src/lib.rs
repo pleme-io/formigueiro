@@ -25,10 +25,12 @@ use outorga::{Observation, PromotionDecision, PromotionPolicy, ShadowReason};
 use serde::{Deserialize, Serialize};
 
 pub mod apply;
+pub mod catalog;
 pub mod colony;
 pub mod constrain;
 pub mod converge;
 pub mod daemon;
+pub use catalog::{catalog_entry, KindEntry, Maturity, KIND_CATALOG};
 pub use constrain::{AllowAll, Blocklist, ConstrainedKind, Constraint};
 pub mod pace;
 pub mod plan_store;

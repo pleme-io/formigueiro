@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["outorga", "formigueiro-core", "formigueiro-flake", "formigueiro-image", "formigueiro-config", "formigueiro"]
+members = ["outorga", "formigueiro-core", "formigueiro-flake", "formigueiro-image", "formigueiro-cargo", "formigueiro-config", "formigueiro"]
 
 [workspace.package]
 edition = "2024"

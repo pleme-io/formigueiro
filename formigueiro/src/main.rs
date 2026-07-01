@@ -27,6 +27,7 @@ use formigueiro_config::FormigueiroConfig;
 use formigueiro_core::{
     execute_applies_paced, Colony, ConvergenceTracker, FlakeInputKind, LeakyBucketPacer,
     MemPlanStore, NullExecutor, ReportSink, Swarm, SwarmDaemon, SwarmReport, SystemClock,
+    KIND_CATALOG,
 };
 use formigueiro_flake::{
     FlakeEnv, FlakeLock, FlakeSignalSource, GitLsRemoteResolver, NixFlakeExecutor,
@@ -59,10 +60,16 @@ struct Args {
     /// Consecutive quiescent cycles required to report the fleet converged (at head).
     #[arg(long, default_value_t = 2)]
     stable_cycles: u32,
+    /// Print the typed catalog of supported update kinds (JSON) and exit.
+    #[arg(long)]
+    list_kinds: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.list_kinds {
+        return emit_json(&KIND_CATALOG); // the swarm describes itself, then exits
+    }
     let mut config = load_config(args.config.as_deref())?;
     if args.freeze {
         config.freeze = true;
