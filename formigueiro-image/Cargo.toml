@@ -1,6 +1,6 @@
 [package]
 name = "formigueiro-image"
-version = "0.1.0"
+version.workspace = true
 description = "The image-tag Environment for the formigueiro update swarm: the current pinned digest of the container images the swarm tracks, plus their upstream digests (via a mockable DigestResolver — skopeo, no shell), composed into a formigueiro-core UpdateEnv. The second update domain — proves the core algebra is domain-agnostic (same traits, different environment)."
 edition.workspace = true
 license.workspace = true
@@ -9,10 +9,10 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
-formigueiro-core = { path = "../formigueiro-core" }
+formigueiro-core = { workspace = true }
 
 [dev-dependencies]
-outorga = { path = "../outorga" }
+outorga = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "outorga"
-version = "0.1.0"
+version.workspace = true
 description = "The generic progressive-authority promotion FSM: shadow → confirm → effect, with a fleet freeze. A k8s-free lift of breathe's promotion lifecycle; consumed by formigueiro (fleet updates) and breathe (resource homeostasis)."
 edition.workspace = true
 license.workspace = true

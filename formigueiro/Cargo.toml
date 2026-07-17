@@ -1,6 +1,6 @@
 [package]
 name = "formigueiro"
-version = "0.1.0"
+version.workspace = true
 description = "The formigueiro update-swarm daemon: reads a flake's inputs, shadow-computes what would update (git ls-remote), promotes through outorga, and emits typed reports — shadow-first by default. Assembles formigueiro-core (the swarm) + formigueiro-flake (the environment) under the formigueiro-config posture."
 edition.workspace = true
 license.workspace = true
@@ -13,10 +13,10 @@ name = "formigueiro"
 path = "src/main.rs"
 
 [dependencies]
-formigueiro-core = { path = "../formigueiro-core" }
+formigueiro-core = { workspace = true }
 formigueiro-flake = { path = "../formigueiro-flake" }
 formigueiro-config = { path = "../formigueiro-config" }
-outorga = { path = "../outorga" }
+outorga = { workspace = true }
 shikumi = { git = "https://github.com/pleme-io/shikumi" }
 serde.workspace = true
 serde_json.workspace = true

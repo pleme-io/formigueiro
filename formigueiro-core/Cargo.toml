@@ -1,6 +1,6 @@
 [package]
 name = "formigueiro-core"
-version = "0.1.0"
+version.workspace = true
 description = "The pure algebra of the fleet update swarm: update signals, the UpdateKind trait + its shadow (compute-what-would-change without writing), the mockable UpdateEnv side-effect boundary, and the formiga tick that composes a shadow outcome with an outorga promotion decision into one typed TickOutcome."
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
-outorga = { path = "../outorga" }
+outorga = { workspace = true }
 
 [dev-dependencies]
 serde_json.workspace = true

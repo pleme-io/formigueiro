@@ -1,15 +1,17 @@
 [package]
 name = "formigueiro-config"
-version = "0.1.0"
+version.workspace = true
 description = "The shikumi-typed configuration surface for the formigueiro fleet update swarm: tiered (bare/prescribed) config for update kinds, per-kind promotion policy (via outorga), the fleet freeze switch, event ingestion, and samba pacing."
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+# Depends on shikumi via git — a git dependency is unpublishable to crates.io.
+publish = false
 
 [dependencies]
 serde.workspace = true
-outorga = { path = "../outorga" }
+outorga = { workspace = true }
 shikumi = { git = "https://github.com/pleme-io/shikumi" }
 
 [dev-dependencies]

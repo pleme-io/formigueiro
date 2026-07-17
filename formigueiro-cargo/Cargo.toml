@@ -1,6 +1,6 @@
 [package]
 name = "formigueiro-cargo"
-version = "0.1.0"
+version.workspace = true
 description = "The cargo-dep Environment for the formigueiro update swarm: the current pinned version of the crates the swarm tracks, plus their latest published versions (via a mockable CrateResolver — cargo search, no shell), composed into a formigueiro-core UpdateEnv. The third update domain — the same core algebra, a third environment."
 edition.workspace = true
 license.workspace = true
@@ -9,10 +9,10 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
-formigueiro-core = { path = "../formigueiro-core" }
+formigueiro-core = { workspace = true }
 
 [dev-dependencies]
-outorga = { path = "../outorga" }
+outorga = { workspace = true }
 
 [lints]
 workspace = true

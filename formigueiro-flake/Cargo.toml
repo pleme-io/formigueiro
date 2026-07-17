@@ -1,6 +1,6 @@
 [package]
 name = "formigueiro-flake"
-version = "0.1.0"
+version.workspace = true
 description = "The flake-input Environment for the formigueiro update swarm: a typed parse of flake.lock (current locked input revs) plus a mockable RefResolver for upstream heads (git ls-remote, no shell), composed into a formigueiro-core UpdateEnv so the swarm can shadow-compute nix flake input bumps. The RefResolver trait is the TYPED-SPEC triplet's Environment seam — real network never touches a unit test."
 edition.workspace = true
 license.workspace = true
@@ -10,10 +10,10 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-formigueiro-core = { path = "../formigueiro-core" }
+formigueiro-core = { workspace = true }
 
 [dev-dependencies]
-outorga = { path = "../outorga" }
+outorga = { workspace = true }
 
 [lints]
 workspace = true
